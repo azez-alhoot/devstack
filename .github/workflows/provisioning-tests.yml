@@ -1,0 +1,70 @@
+# Core tests: Provision and bring up various services on devstack
+
+name: Provisioning tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches:
+      - '**'
+
+jobs:
+
+  run_ci:
+    runs-on: ${{ matrix.os }}
+    env:
+      DEVSTACK_WORKSPACE: /tmp
+      SHALLOW_CLONE: 1
+      # Don't report metrics as real usage
+      DEVSTACK_METRICS_TESTING: ci
+    strategy:
+      matrix:
+        os:
+          - ubuntu-20.04 # Ubuntu 20.04 "Focal Fossa"
+        python-version: [ '3.8' ]
+        services: [ discovery+lms+forum ,registrar+lms, ecommerce+lms, edx_notes_api+lms, credentials+lms, xqueue]
+      fail-fast: false # some services can be flaky; let others run to completion even if one fails
+
+    steps:
+      - uses: actions/checkout@v2
+      - name: setup python
+        uses: actions/setup-python@v2
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: installations and version upgrades
+        run: |
+          docker version
+          sudo apt-get update
+          sudo apt install apt-transport-https ca-certificates curl software-properties-common
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
+          sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu focal test"
+          sudo apt update
+          sudo apt install docker-ce
+          docker version
+          docker-compose --version
+
+      - name: free up disk space
+        run:  sudo apt remove --purge -y ghc-* azure-cli google-cloud-sdk hhvm llvm-* dotnet-* powershell mono-* php* ruby*
+
+      - name: set up requirements
+        run:  make requirements
+
+      - name: clone
+        run:  make dev.clone.https
+
+      - name: pull
+        run:  make dev.pull.${{matrix.services}}
+
+      - name: provision
+        run:  make dev.provision.${{matrix.services}}
+
+      - name: dev.up
+        run:  make dev.up.${{matrix.services}}
+
+      - name: dev.check
+        run:  make dev.check.${{matrix.services}}
+
+      - name: docs
+        run:  make docs

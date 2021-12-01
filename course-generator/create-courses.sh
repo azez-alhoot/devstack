@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Script that provisions studio, ecommerce, marketing with courses
-# USAGE: ./create-courses [--studio] [--ecommerce] [--marketing] course-config.json
+# Script that provisions studio, and ecommerce with courses
+# USAGE: ./create-courses [--studio] [--ecommerce] course-config.json
 studio=false
 ecommerce=false
-marketing=false
 echo "Parsing options"
 container_error=false
 for arg in "$@"; do
@@ -15,22 +14,16 @@ for arg in "$@"; do
             studio=true
         fi
     elif [ $arg == "--ecommerce" ]; then
-        if [ ! "$(docker exec -t edx.devstack.ecommerce bash -c 'echo "Course will be created for ecommerce"; exit $?')" ]; then
+        if [ ! "$(docker-compose exec ecommerce bash -c 'echo "Course will be created for ecommerce"; exit $?')" ]; then
             echo "Issue with ecommerce container"
             container_error=true
         else
             ecommerce=true
         fi
-    elif [ $arg == "--marketing" ]; then
-        if [ ! "$(docker exec -t edx.devstack.marketing bash -c 'echo "Course will be created for marketing"; exit $?')" ]; then
-            echo "Issue with marketing container. Course creation will proceed without marketing container."
-        else
-            marketing=true
-        fi
     fi
 done
 
-if $container_error; then 
+if $container_error; then
     echo "Aborting course creation. Check your containers"
     exit
 fi
@@ -39,7 +32,7 @@ fi
 ## This will allow users to rerun the command multiple times and avoid duplicate course ids
 course_config_file="${@: -1}"
 if [[ ! -f $course_config_file ]] ; then
-    echo "$course_config_file does not exist. Must provide a valid course config file." 
+    echo "$course_config_file does not exist. Must provide a valid course config file."
     exit
 fi
 course_json=""
@@ -54,10 +47,5 @@ fi
 
 if $ecommerce ; then
 	echo "Creating courses on ecommerce."
-	docker exec -t edx.devstack.ecommerce bash -c "source /edx/app/ecommerce/ecommerce_env && python /edx/app/ecommerce/ecommerce/manage.py generate_courses '$course_json'"
-fi
-
-if $marketing ; then
-	echo "Creating courses on marketing."
-	docker exec -t edx.devstack.marketing bash -c "drush generate_courses '$course_json'"
+	docker-compose exec ecommerce bash -c "source /edx/app/ecommerce/ecommerce_env && python /edx/app/ecommerce/ecommerce/manage.py generate_courses '$course_json'"
 fi

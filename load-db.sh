@@ -7,8 +7,7 @@
 #
 # This will load the edxapp database from a file named exapp.sql.
 
-set -e
-set -o pipefail
+set -eu -o pipefail
 
 if [ -z "$1" ]
 then
@@ -17,5 +16,6 @@ then
 fi
 
 echo "Loading the $1 database..."
-docker exec -i edx.devstack.mysql mysql -uroot $1 < $1.sql
+mysql_container=$(make --silent --no-print-directory dev.print-container.mysql57)
+docker exec -i "$mysql_container" mysql -uroot $1 < $1.sql
 echo "Finished loading the $1 database!"

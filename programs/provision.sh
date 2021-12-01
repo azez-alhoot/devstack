@@ -1,4 +1,7 @@
-#!/bin/sh
+#!/usr/bin/env bash
+set -eu -o pipefail
+set -x
+
 #
 # To add programs support, we need to tweak/add certain rows in the database.
 # We want to go through Django for this (rather than direct db modification), since we have a lot of Python
@@ -17,10 +20,10 @@ BASEDIR=$(dirname "$0")
 # Main items are green, rest is dull grey since they are noisy, but we still might want to see their output,
 # for error cases and the like.
 notice() {
-    SWITCH="\033["
-    GREY="${SWITCH}0;37m"
+    SWITCH='\033['
+    GREY="${SWITCH}1;90m"
     GREEN="${SWITCH}0;32m"
-    echo "${GREEN}${@}${GREY}"
+    echo -e "${GREEN}${@}${GREY}"
 }
 
 # We reset color once we're done with the script.
@@ -28,7 +31,7 @@ notice() {
 reset_color() {
     SWITCH="\033["
     NORMAL="${SWITCH}0m"
-    echo -n "${NORMAL}"
+    echo -e -n "${NORMAL}"
 }
 
 docker_exec() {
@@ -42,20 +45,23 @@ docker_exec() {
     /edx/app/$app/$repo/manage.py $cmd
     "
 
-    docker-compose exec "$service" bash -c "$CMDS"
+    docker-compose exec -T "$service" bash -e -c "$CMDS"
 }
 
 provision_ida() {
-    service=${1}
-    cmd=${2:-"shell"}
+    service=$1
+    cmd=$2
+    shift 2
 
     # Escape double quotes and backticks from the Python
     PROGRAM_SCRIPT="$(sed -E 's/("|`)/\\\1/g' < "$BASEDIR/$service.py")"
 
     cmd="$cmd -c \"$PROGRAM_SCRIPT\""
 
-    docker_exec "$service" "$cmd" "$3" "$4"
+    docker_exec "$service" "$cmd" "$@"
 }
+
+trap reset_color 1 2 3 6 15
 
 if [ "$1" = "lms" -o -z "$1" ]; then
     notice Adding program support to LMS...
@@ -64,7 +70,10 @@ fi
 
 if [ "$1" = "discovery" -o -z "$1" ]; then
     notice Adding demo program to Discovery...
-    provision_ida discovery
+    set +e
+    # FIXME[bash-e]: Bash scripts should use -e -- but this command fails
+    provision_ida discovery "shell"
+    set -e
 fi
 
 if [ "$1" = "cache" -o -z "$1" ]; then

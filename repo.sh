@@ -41,7 +41,7 @@ private_repos=(
     "https://github.com/edx/edx-themes.git"
 )
 
-name_pattern=".*/(.*).git"
+name_pattern=".*edx/(.*).git"
 
 _checkout ()
 {
@@ -108,7 +108,7 @@ _checkout_and_update_branch ()
         git fetch origin ${OPENEDX_GIT_BRANCH}:${OPENEDX_GIT_BRANCH}
         git checkout ${OPENEDX_GIT_BRANCH}
     fi
-    find . -name '*.pyc' -not -path './.git/*' -delete 
+    find . -name '*.pyc' -not -path './.git/*' -delete
 }
 
 clone ()

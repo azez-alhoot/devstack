@@ -24,9 +24,9 @@ build_script:
 # https://openedx.atlassian.net/browse/TE-2761
 #- docker-switch-linux
 - md X:\devstack
-- "\"%ProgramFiles%/Git/bin/bash.exe\" -c \"make dev.clone\""
+- "\"%ProgramFiles%/Git/bin/bash.exe\" -c \"make dev.clone.https\""
 # Stop here until we get provisioning to finish reliably
-#- "\"%ProgramFiles%/Git/bin/bash.exe\" -c \"make pull\""
+#- "\"%ProgramFiles%/Git/bin/bash.exe\" -c \"make dev.pull\""
 
 test_script:
 - "\"%ProgramFiles%/Git/bin/bash.exe\" -c \"make help\""

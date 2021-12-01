@@ -26,9 +26,9 @@ following:
    start button with no further error when this problem occurs. See `Jetbrains
    ticket PY-22893`_.
 
-2. If you are running with Docker Sync on a mac you will want to first run
-   ``docker-sync start`` to run sync in the background before running any
-   servers or tests.
+2. Ensure you are not using docker-sync (i.e. not using any make commands with ``sync`` in their name). Read more about the `deprecation of docker-sync`_.
+
+.. _deprecation of docker-sync: https://openedx.atlassian.net/browse/DEPR-162
 
 Setup a Remote Interpreter
 --------------------------
@@ -43,21 +43,21 @@ use the following options:
 
 - Configuration files(s)
 
-  - Docker Sync (Mac)
-
-    - ``/LOCAL/PATH/TO/devstack/docker-compose.yml`` (e.g.~/edx/devstack/docker-compose.yml)
-    - ``/LOCAL/PATH/TO/devstack/docker-compose-sync.yml``
-
-  - Without Docker Sync
-
-    - ``/LOCAL/PATH/TO/devstack/docker-compose.yml`` (e.g.~/edx/devstack/docker-compose.yml)
-    - ``/LOCAL/PATH/TO/devstack/docker-compose-host.yml``
+  - ``/LOCAL/PATH/TO/devstack/docker-compose.yml`` (e.g.~/edx/devstack/docker-compose.yml)
+  - ``/LOCAL/PATH/TO/devstack/docker-compose-host.yml``
+  - ``/LOCAL/PATH/TO/devstack/docker-compose-themes.yml``
 
 - Service: lms (or whatever IDA you wish to test)
 
-- Environment variables:
+- Required Environment variables:
 
-  - ``DEVSTACK_WORKSPACE=/LOCAL/PARENT/PATH/TO/workspace`` (i.e.: Path to where your local repositories are cloned)
+  - ``DEVSTACK_WORKSPACE=/LOCAL/PARENT/PATH/TO/workspace`` (i.e.: Path to where your local repositories are cloned. This needs to be full path an not relative (e.g. './') path to ensure proper configuration of python packages.)
+  - ``VIRTUAL_ENV=/LOCAL/PARENT/PATH/TO/workspace/devstack/venv`` (i.e.: Path to where your local devstack virtual environment exists for release.)
+
+- Optional Environment variables:
+
+  - ``OPENEDX_RELEASE=release.version`` (i.e.: appropriate image tag; "juniper.master")
+  - ``COMPOSE_PROJECT_NAME=docker-compose.container`` (i.e.: "devstack-juniper.master"; appropriate docker-compose container project for devstack multiple release (same machine); ensures specific Docker containers get used based on release name; Ref: https://github.com/edx/devstack/pull/532)
 
 - Python interpreter path:
 
@@ -68,7 +68,7 @@ use the following options:
   - For example, the path would be the following for the Ecommerce Service:
 
     - ``/edx/app/ecommerce/venvs/ecommerce/bin/python``
-    - Note: The Credentials Service might not have a virtualenv set up in the container. 
+    - Note: The Credentials Service might not have a virtualenv set up in the container.
 
   - For either lms or studio, you need to use edxapp:
 
@@ -98,14 +98,18 @@ If your Django Project contains a single repo, like ecommerce, your settings
 would look as follows:
 
 Django Project Root: /Path/to/docker_devstack/ecommerce
+
 Settings: ecommerce/settings/devstack.py
+
 Manage Script: manage.py
 
 If you have all of the repos open in a single Django Project, you would use the
 following:
 
 Django Project Root: /Path/to/docker_devstack
+
 Settings: ecommerce/ecommerce/settings/devstack.py
+
 Manage Script: ecommerce/manage.py
 
 Note: With all repos in the same project, you would need to update these
@@ -163,6 +167,8 @@ Configuration`_, with the following specific values.
    - ``DJANGO_SETTINGS_MODULE=lms.envs.devstack_docker`` (or
      cms.envs.devstack_docker)
    - ``PYTHONUNBUFFERED=1``
+   - ``CONFIG_ROOT=/edx/app/edxapp``
+   - ``LMS_CFG=/edx/etc/lms.yml``
 
 5. Python Interpreter: Choose the Docker Compose interpreter for this
    service.
@@ -175,6 +181,31 @@ Configuration`_, with the following specific values.
    - Remote path: /edx/app/edxapp/edx-platform
 
 8. Deselect "Add content..." and "Add source..."
+
+9. Before launch: External tool, Activate tool window
+
+   (i.e ensures release services are stopped prior to launching the debug/run configuration)
+   e.g. ``make OPENEDX_RELEASE=juniper.master stop.all`` from "devstack" repo.)
+
+   - Click '+' then `Add New Configuration > Run External tool`
+
+     - Assign values:
+
+       - Name: "Stop all running containers for release."
+       - Description: "Stop all running containers for release."
+       - Tool Settings:
+
+         - Program: make
+         - Arugments: OPENEDX_RELEASE=juniper.master stop.all
+         - Working directory: $ProjectFileDir$/devstack
+
+     - Advanced Options
+
+       - (Deselect) Synchronize files after execution
+       - (Select) Open console for tool output
+
+         - (Select) Make console active on message in stdout
+         - (Select) Make console active on message in stderr
 
 Setup a Run/Debug Configuration for python tests
 ------------------------------------------------
@@ -318,6 +349,6 @@ One way to do this is to follow these instructions:
 .. _Django Server Run/Debug Configuration: https://www.jetbrains.com/help/pycharm/2017.1/run-debug-configuration-django-server.html
 .. _Jetbrains ticket PY-22893: https://youtrack.jetbrains.com/issue/PY-22893
 .. _PyCharm: https://www.jetbrains.com/pycharm/
-.. _PyCharm IDE setup: https://openedx.atlassian.net/wiki/spaces/OpenDev/pages/92209229/PyCharm
+.. _PyCharm IDE setup: https://openedx.atlassian.net/wiki/spaces/AC/pages/92209229/PyCharm
 .. _README: ../README.rst
 .. _vendor documentation: https://www.jetbrains.com/help/pycharm/2017.1/configuring-remote-interpreters-via-docker-compose.html

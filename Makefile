@@ -1,18 +1,128 @@
-########################################################################################################################
-#
-# When adding a new target:
-#   - If you are adding a new service make sure the dev.reset target will fully reset said service.
-#
-########################################################################################################################
+# This Makefile serves as the primary command-line interface to interacting with Devstack.
+
+# Almost all targets take the form:
+#     make dev.ACTION.SERVICES
+# where ACTION could be 'up', 'pull.without-deps', 'attach', and so on,
+# and SERVICES is a plus-sign-separated list of services.
+# Examples:
+#     make dev.attach.credentials
+#     make dev.pull.registrar+studio
+#     make dev.up.lms
+#     make dev.up.without-deps.lms+forum+discovery+mysql+elasticsearch+memcached
+#     make dev.restart-container.mysql+lms
+
+# There are also "prefix-form" targets, which are simply an alternate way to spell
+# the 'dev.' targets.
+# Specifically:
+#      make dev.ACTION.SERVICE
+# can be spelled as:
+#      make SERVICE-ACTION
+# For example:
+#      make dev.up.registrar
+# can be spelled:
+#      make registrar-up
+
+# Additionally, this file pulls in default configuration variables from `options.mk`
+# as well as local overrides in `options.local.mk`, if present.
+# Finally, extra targets from `compatibility.mk` and `local.mk` (if present)
+# are pulled into this Makefile.
+
+# Housekeeping Rules:
+# * Put new targets under an appropriate header comment.
+# * Prefix targets with 'dev.' if and only if they are meant to be part
+#   of the general developer interface.
+# * Consider adding "prefix-form" versions of new targets
+#   for consistency/convenience of interface.
+# * Add brief ##-prefixed comments on same line as targets to include them
+#   in the `make help` message. Avoid adding descriptions that are overly long,
+#   redundant with other targets, or irrelevant to users.
+
 .DEFAULT_GOAL := help
-.PHONY: requirements
 
-DEVSTACK_WORKSPACE ?= $(shell pwd)/..
+# All devstack targets are "PHONY" in that they do not name actual files.
+# Thus, all non-parameterized targets should be added to this declaration.
+.PHONY: build-courses \
+        create-test-course dev.attach dev.backup dev.cache-programs dev.check \
+        dev.check-memory dev.checkout dev.clone dev.clone.https dev.clone.ssh \
+        dev.dbshell dev.destroy dev.down dev.drop-db dev.kill dev.logs \
+        dev.migrate dev.migrate.lms dev.migrate.studio dev.nfs.setup \
+        devpi-password dev.provision dev.ps dev.pull dev.pull.without-deps \
+        dev.reset dev.reset-repos dev.restart-container dev.restart-devserver \
+        dev.restart-devserver.forum dev.restore dev.rm-stopped dev.shell \
+        dev.shell.credentials dev.shell.discovery \
+        dev.shell.ecommerce dev.shell.lms dev.shell.lms_watcher \
+        dev.shell.registrar dev.shell.studio \
+        dev.shell.studio_watcher dev.shell.xqueue dev.shell.xqueue_consumer \
+        dev.static dev.static.lms dev.static.studio dev.stats dev.status \
+        dev.stop dev.sync.daemon.start dev.sync.provision \
+        dev.sync.requirements dev.sync.up dev.up dev.up.attach dev.up.shell \
+        dev.up.without-deps dev.up.without-deps.shell dev.up.with-programs \
+        dev.up.with-watchers dev.validate docs e2e-tests e2e-tests.with-shell \
+        help requirements impl-dev.clone.https impl-dev.clone.ssh impl-dev.provision \
+        impl-dev.pull impl-dev.pull.without-deps impl-dev.up impl-dev.up.attach \
+        impl-dev.up.without-deps selfcheck upgrade upgrade \
+        validate-lms-volume vnc-passwords
 
+# Load up options (configurable through options.local.mk).
+include options.mk
+
+# The `COMPOSE_FILE` environment variable tells Docker Compose which YAML
+# files to use when `docker-compose` is called without specifying any YAML files.
+# These files include definitions of services and volumes.
+# Depending on the value of FS_SYNC_STRATEGY, we use a slightly different set of
+# files, enabling use of different strategies to synchronize files between the host and
+# the containers.
+# Some services are only available for certain values of FS_SYNC_STRATEGY.
+# For example, the LMS/Studio asset watchers are only available for local-mounts and nfs,
+# and XQueue is only available for local-mounts.
+
+# Files for use with local volume mounting (default).
+ifeq ($(FS_SYNC_STRATEGY),local-mounts)
+COMPOSE_FILE := docker-compose-host.yml
+COMPOSE_FILE := $(COMPOSE_FILE):docker-compose-themes.yml
+COMPOSE_FILE := $(COMPOSE_FILE):docker-compose-watchers.yml
+endif
+
+# Files for use with Network File System -based synchronization.
+ifeq ($(FS_SYNC_STRATEGY),nfs)
+COMPOSE_FILE := docker-compose-host-nfs.yml
+COMPOSE_FILE := $(COMPOSE_FILE):docker-compose-themes-nfs.yml
+COMPOSE_FILE := $(COMPOSE_FILE):docker-compose-watchers-nfs.yml
+endif
+
+# Files for use with Docker Sync.
+ifeq ($(FS_SYNC_STRATEGY),docker-sync)
+COMPOSE_FILE := docker-compose-host.yml
+COMPOSE_FILE := $(COMPOSE_FILE):docker-compose-sync.yml
+endif
+
+ifndef COMPOSE_FILE
+$(error FS_SYNC_STRATEGY is set to $(FS_SYNC_STRATEGY). Must be one of: local-mounts, nfs, docker-sync)
+endif
+
+# All three filesystem synchronization strategies require the main docker-compose.yml file.
+COMPOSE_FILE := docker-compose.yml:$(COMPOSE_FILE)
+
+# Tell Docker Compose that the Compose file list uses a colon as the separator.
+COMPOSE_PATH_SEPARATOR := :
+
+# All runnable services, separated by plus signs.
+ALL_SERVICES := $(EDX_SERVICES)+$(THIRD_PARTY_SERVICES)
+
+# These `*_SERVICES_LIST` variables are equivalent to their `*_SERVICES` counterparts,
+# but with spaces for separators instead of plus signs.
+EDX_SERVICES_LIST := $(subst +, ,$(EDX_SERVICES))
+DB_SERVICES_LIST := $(subst +, ,$(DB_SERVICES))
+ASSET_SERVICES_LIST := $(subst +, ,$(ASSET_SERVICES))
+DEFAULT_SERVICES_LIST := $(subst +, ,$(DEFAULT_SERVICES))
+THIRD_PARTY_SERVICES_LIST := $(subst +, ,$(THIRD_PARTY_SERVICES))
+ALL_SERVICES_LIST := $(subst +, ,$(ALL_SERVICES))
+
+# Get information on host operating system via the `uname` command.
 OS := $(shell uname)
 
 # Need to run some things under winpty in a Windows git-bash shell
-# (but not when calling bash from a command shell or PowerShell)
+# (but not when calling bash from a command shell or PowerShell).
 ifneq (,$(MINGW_PREFIX))
     WINPTY := winpty
 else
@@ -26,269 +136,548 @@ else
     DEVNULL := >/dev/null
 endif
 
-COMPOSE_PROJECT_NAME=devstack
+# Export Makefile variables to recipe shells.
+export
 
-export DEVSTACK_WORKSPACE
-export COMPOSE_PROJECT_NAME
+# Include aliases from old Devstack commands to the ones in this Makefile.
+# This allows us to evolve and tidy up the Devstack interface without removing support
+# for existing scripts and workflows.
+include compatibility.mk
 
-include *.mk
+# Include local, git-ignored Makefile with additional targets.
+-include local.mk  # Prefix with hyphen to tolerate absence of file.
+
+
+########################################################################################
+# Targets for managing the Devstack repo itself.
+########################################################################################
 
 # Generates a help message. Borrowed from https://github.com/pydanny/cookiecutter-djangopackage.
-help: ## Display this help message
+help: ## Display this help message.
 	@echo "Please use \`make <target>' where <target> is one of"
-	@perl -nle'print $& if m{^[\.a-zA-Z_-]+:.*?## .*$$}' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m  %-25s\033[0m %s\n", $$1, $$2}'
+	@awk -F ':.*?## ' '/^[a-zA-Z]/ && NF==2 {printf "\033[36m  %-28s\033[0m %s\n", $$1, $$2}' Makefile | sort
 
-requirements: ## Install requirements
-	pip install -r requirements/base.txt
+requirements: ## install development environment requirements
+	pip install -r requirements/dev.txt
 
-upgrade: ## Upgrade requirements with pip-tools
+upgrade: export CUSTOM_COMPILE_COMMAND=make upgrade
+upgrade: ## Upgrade requirements with pip-tools.
 	pip install -qr requirements/pip-tools.txt
 	pip-compile --upgrade -o requirements/pip-tools.txt requirements/pip-tools.in
 	pip-compile --upgrade -o requirements/base.txt requirements/base.in
-	bash post-pip-compile.sh \
-		requirements/pip-tools.txt \
-		requirements/base.txt \
+	pip-compile --upgrade -o requirements/doc.txt requirements/doc.in
+	pip-compile --upgrade -o requirements/test.txt requirements/test.in
+	pip-compile --upgrade -o requirements/dev.txt requirements/dev.in
 
-dev.checkout: ## Check out "openedx-release/$OPENEDX_RELEASE" in each repo if set, "master" otherwise
-	./repo.sh checkout
+selfcheck: ## Check that the Makefile is free of Make syntax errors.
+	@echo "The Makefile is well-formed."
 
-dev.clone: ## Clone service repos to the parent directory
-	./repo.sh clone
 
-dev.provision.run: ## Provision all services with local mounted directories
-	DOCKER_COMPOSE_FILES="-f docker-compose.yml -f docker-compose-host.yml" $(WINPTY) bash ./provision.sh
+########################################################################################
+# Developer interface: Repository management.
+########################################################################################
 
-dev.provision: | check-memory dev.clone dev.provision.run stop ## Provision dev environment with all services stopped
-
-dev.provision.xqueue: | check-memory dev.provision.xqueue.run stop stop.xqueue  # Provision XQueue; run after other services are provisioned
-
-dev.provision.xqueue.run:
-	DOCKER_COMPOSE_FILES="-f docker-compose.yml -f docker-compose-xqueue.yml" $(WINPTY) bash ./provision-xqueue.sh
-
-dev.reset: | down dev.repo.reset pull dev.up static update-db ## Attempts to reset the local devstack to the master working state
-
-dev.status: ## Prints the status of all git repositories
-	$(WINPTY) bash ./repo.sh status
-
-dev.repo.reset: ## Attempts to reset the local repo checkouts to the master working state
+dev.reset-repos: ## Attempt to reset the local repo checkouts to the master working state.
 	$(WINPTY) bash ./repo.sh reset
 
-dev.up: | check-memory ## Bring up all services with host volumes
-	bash -c 'docker-compose -f docker-compose.yml -f docker-compose-host.yml up -d'
-	@# Comment out this next line if you want to save some time and don't care about catalog programs
-	$(WINPTY) bash ./programs/provision.sh cache $(DEVNULL)
+dev.status: ## Prints the status of all git repositories.
+	$(WINPTY) bash ./repo.sh status
 
-dev.up.watchers: | check-memory ## Bring up asset watcher containers
-	bash -c 'docker-compose -f docker-compose-watchers.yml up -d'
+dev.checkout: ## Check out "openedx-release/$OPENEDX_RELEASE" in each repo if set, "master" otherwise.
+	./repo.sh checkout
 
-dev.up.xqueue: | check-memory ## Bring up xqueue, assumes you already have lms running
-	bash -c 'docker-compose -f docker-compose.yml -f docker-compose-xqueue.yml -f docker-compose-host.yml up -d'
+dev.clone: dev.clone.ssh ## Clone service repos to the parent directory.
 
-dev.up.all: | dev.up dev.up.watchers ## Bring up all services with host volumes, including watchers
+impl-dev.clone.https: ## Clone service repos using HTTPS method to the parent directory.
+	./repo.sh clone
 
-dev.sync.daemon.start: ## Start the docker-sycn daemon
-	docker-sync start
+dev.clone.https: ## Clone service repos using HTTPS method to the parent directory.
+	@scripts/send_metrics.py wrap "$@"
 
-dev.sync.provision: | dev.sync.daemon.start dev.provision ## Provision with docker-sync enabled
+impl-dev.clone.ssh: ## Clone service repos using SSH method to the parent directory.
+	./repo.sh clone_ssh
 
-dev.sync.requirements: ## Install requirements
-	gem install docker-sync
+dev.clone.ssh: ## Clone service repos using SSH method to the parent directory.
+	@scripts/send_metrics.py wrap "$@"
 
-dev.sync.up: dev.sync.daemon.start ## Bring up all services with docker-sync enabled
-	docker-compose -f docker-compose.yml -f docker-compose-sync.yml up -d
+########################################################################################
+# Developer interface: Docker image management.
+########################################################################################
 
-provision: | dev.provision ## This command will be deprecated in a future release, use dev.provision
-	echo "\033[0;31mThis command will be deprecated in a future release, use dev.provision\033[0m"
+dev.prune: ## Prune dangling docker images, containers, and networks. Useful when you get the 'no space left on device' error
+	docker system prune -f
+	# See also: https://edx.readthedocs.io/projects/open-edx-devstack/en/latest/troubleshoot_general_tips.html#no-space-left-on-device
 
-stop: ## Stop all services
+dev.pull.without-deps: _expects-service-list.dev.pull.without-deps
+
+dev.pull.without-deps.%: ## Pull latest Docker images for specific services.
+	@scripts/send_metrics.py wrap "dev.pull.without-deps.$*"
+
+impl-dev.pull.without-deps.%: ## Pull latest Docker images for specific services.
+	docker-compose pull $$(echo $* | tr + " ")
+
+dev.pull:
+	@scripts/send_metrics.py wrap "$@"
+
+impl-dev.pull:
+	@scripts/make_warn_default_large.sh "dev.pull"
+
+dev.pull.large-and-slow: dev.pull.$(DEFAULT_SERVICES) ## Pull latest Docker images required by default services.
+	@echo # at least one statement so that dev.pull.% doesn't run too
+
+# Wildcards must be below anything they could match
+dev.pull.%: ## Pull latest Docker images for services and their dependencies.
+	@scripts/send_metrics.py wrap "dev.pull.$*"
+
+impl-dev.pull.%: ## Pull latest Docker images for services and their dependencies.
+	docker-compose pull --include-deps $$(echo $* | tr + " ")
+
+########################################################################################
+# Developer interface: Database management.
+########################################################################################
+
+impl-dev.provision: ## Provision dev environment with default services, and then stop them.
+	# We provision all default services as well as 'e2e' (end-to-end tests).
+	# e2e is not part of `DEFAULT_SERVICES` because it isn't a service;
+	# it's just a way to tell ./provision.sh that the fake data for end-to-end
+	# tests should be prepared.
+	make dev.check-memory
+	$(WINPTY) bash ./provision.sh $(DEFAULT_SERVICES)+e2e
+	make dev.stop
+
+dev.provision: ## Provision dev environment with default services, and then stop them.
+	@scripts/send_metrics.py wrap "$@"
+
+impl-dev.provision.%: dev.check-memory ## Provision specified services.
+	echo $*
+	$(WINPTY) bash ./provision.sh $*
+
+dev.provision.%: ## Provision specified services.
+	@scripts/send_metrics.py wrap "dev.provision.$*"
+
+dev.backup: dev.up.mysql+mysql57+mongo+elasticsearch+elasticsearch7+elasticsearch710+coursegraph ## Write all data volumes to the host.
+	docker run --rm --volumes-from $$(make --silent --no-print-directory dev.print-container.mysql) -v $$(pwd)/.dev/backups:/backup debian:jessie tar zcvf /backup/mysql.tar.gz /var/lib/mysql
+	docker run --rm --volumes-from $$(make --silent --no-print-directory dev.print-container.mysql57) -v $$(pwd)/.dev/backups:/backup debian:jessie tar zcvf /backup/mysql57.tar.gz /var/lib/mysql
+	docker run --rm --volumes-from $$(make --silent --no-print-directory dev.print-container.mongo) -v $$(pwd)/.dev/backups:/backup debian:jessie tar zcvf /backup/mongo.tar.gz /data/db
+	docker run --rm --volumes-from $$(make --silent --no-print-directory dev.print-container.elasticsearch) -v $$(pwd)/.dev/backups:/backup debian:jessie tar zcvf /backup/elasticsearch.tar.gz /usr/share/elasticsearch/data
+	docker run --rm --volumes-from $$(make --silent --no-print-directory dev.print-container.elasticsearch7) -v $$(pwd)/.dev/backups:/backup debian:jessie tar zcvf /backup/elasticsearch7.tar.gz /usr/share/elasticsearch/data
+	docker run --rm --volumes-from $$(make --silent --no-print-directory dev.print-container.elasticsearch710) -v $$(pwd)/.dev/backups:/backup debian:jessie tar zcvf /backup/elasticsearch710.tar.gz /usr/share/elasticsearch/data
+	docker run --rm --volumes-from $$(make --silent --no-print-directory dev.print-container.coursegraph) -v $$(pwd)/.dev/backups:/backup debian:jessie tar zcvf /backup/coursegraph.tar.gz /data
+
+dev.restore: dev.up.mysql+mysql57+mongo+elasticsearch+elasticsearch7+elasticsearch710+coursegraph ## Restore all data volumes from the host. WILL OVERWRITE ALL EXISTING DATA!
+	docker run --rm --volumes-from $$(make --silent --no-print-directory dev.print-container.mysql) -v $$(pwd)/.dev/backups:/backup debian:jessie tar zxvf /backup/mysql.tar.gz
+	docker run --rm --volumes-from $$(make --silent --no-print-directory dev.print-container.mysql57) -v $$(pwd)/.dev/backups:/backup debian:jessie tar zxvf /backup/mysql57.tar.gz
+	docker run --rm --volumes-from $$(make --silent --no-print-directory dev.print-container.mongo) -v $$(pwd)/.dev/backups:/backup debian:jessie tar zxvf /backup/mongo.tar.gz
+	docker run --rm --volumes-from $$(make --silent --no-print-directory dev.print-container.elasticsearch) -v $$(pwd)/.dev/backups:/backup debian:jessie tar zxvf /backup/elasticsearch.tar.gz
+	docker run --rm --volumes-from $$(make --silent --no-print-directory dev.print-container.elasticsearch7) -v $$(pwd)/.dev/backups:/backup debian:jessie tar zxvf /backup/elasticsearch7.tar.gz
+	docker run --rm --volumes-from $$(make --silent --no-print-directory dev.print-container.elasticsearch710) -v $$(pwd)/.dev/backups:/backup debian:jessie tar zxvf /backup/elasticsearch710.tar.gz
+	docker run --rm --volumes-from $$(make --silent --no-print-directory dev.print-container.coursegraph) -v $$(pwd)/.dev/backups:/backup debian:jessie tar zxvf /backup/coursegraph.tar.gz
+
+# List of Makefile targets to run database migrations, in the form dev.migrate.$(service)
+# Services will only have their migrations added here
+# if the service is present in both $(DEFAULT_SERVICES_LIST) and $(DB_SERVICES_LIST).
+_db_migration_targets = \
+$(foreach db_service,$(DB_SERVICES_LIST),\
+	$(if $(filter $(db_service), $(DEFAULT_SERVICES_LIST)),\
+		dev.migrate.$(db_service)))
+
+dev.migrate: | $(_db_migration_targets) ## Run migrations for applicable default services.
+
+dev.migrate.studio:
+	docker-compose exec studio bash -c 'source /edx/app/edxapp/edxapp_env && cd /edx/app/edxapp/edx-platform/ && paver update_db'
+
+dev.migrate.lms:
+	docker-compose exec lms bash -c 'source /edx/app/edxapp/edxapp_env && cd /edx/app/edxapp/edx-platform/ && paver update_db'
+
+dev.migrate.%: ## Run migrations on a service.
+	docker-compose exec $* bash -c 'source /edx/app/$*/$*_env && cd /edx/app/$*/$*/ && make migrate'
+
+dev.drop-db: _expects-database.dev.drop-db
+
+dev.drop-db.%: ## Irreversably drop the contents of a MySQL database in each mysql container.
+	docker-compose exec -T mysql bash -c "mysql --execute=\"DROP DATABASE $*;\""
+	docker-compose exec -T mysql57 bash -c "mysql --execute=\"DROP DATABASE $*;\""
+
+
+########################################################################################
+# Developer interface: Container management.
+########################################################################################
+
+dev.up.attach: _expects-service.dev.up.attach
+
+impl-dev.up.attach.%: ## Bring up a service and its dependencies + and attach to it.
+	docker-compose up $*
+
+dev.up.attach.%: ## Bring up a service and its dependencies + and attach to it.
+	@scripts/send_metrics.py wrap "dev.up.attach.$*"
+
+dev.up.shell: _expects-service.dev.up.shell
+
+dev.up.shell.%: ## Bring up a service and its dependencies + shell into it.
+	make dev.up.$*
+	make dev.shell.$*
+
+dev.up.with-programs: dev.up dev.cache-programs ## Bring up default services + cache programs in LMS.
+
+dev.up.with-programs.%: dev.up.$* dev.cache-programs ## Bring up services and their dependencies + cache programs in LMS.
+
+dev.up.with-watchers: dev.up.$(DEFAULT_SERVICES)+lms_watcher+studio_watcher ## Bring up default services + asset watcher containers.
+
+dev.up.with-watchers.%: ## Bring up services and their dependencies + asset watcher containers.
+	make dev.up.$*
+	make dev.up.lms_watcher+studio_watcher
+
+dev.up.without-deps: _expects-service-list.dev.up.without-deps
+
+impl-dev.up.without-deps.%: dev.check-memory ## Bring up services by themselves.
+	docker-compose up --d --no-deps $$(echo $* | tr + " ")
+
+dev.up.without-deps.%: ## Bring up services by themselves.
+	@scripts/send_metrics.py wrap "dev.up.without-deps.$*"
+
+dev.up.without-deps.shell: _expects-service.dev.up.without-deps.shell
+
+dev.up.without-deps.shell.%: ## Bring up a service by itself + shell into it.
+	make dev.up.without-deps.$*
+	make dev.shell.$*
+
+dev.up:
+	@scripts/make_warn_default_large.sh "$@"
+
+dev.up.large-and-slow: dev.up.$(DEFAULT_SERVICES) ## Bring up default services.
+	@echo # at least one statement so that dev.up.% doesn't run too
+
+impl-dev.up.%: dev.check-memory ## Bring up services and their dependencies.
+	docker-compose up -d $$(echo $* | tr + " ")
+ifeq ($(ALWAYS_CACHE_PROGRAMS),true)
+	make dev.cache-programs
+endif
+
+# Wildcards must be below anything they could match
+dev.up.%:
+	@scripts/send_metrics.py wrap "dev.up.$*"
+
+dev.ps: ## View list of created services and their statuses.
+	docker-compose ps
+
+dev.print-container.%: ## Get the ID of the running container for a given service.
+	@# Can be run as ``make --silent --no-print-directory dev.print-container.$service`` for just ID.
+	@echo $$(docker-compose ps --quiet $*)
+
+dev.restart-container: ## Restart all service containers.
+	docker-compose restart $$(echo $* | tr + " ")
+
+dev.restart-container.%: ## Restart specific services' containers.
+	docker-compose restart $$(echo $* | tr + " ")
+
+dev.stop: ## Stop all running services.
 	(test -d .docker-sync && docker-sync stop) || true ## Ignore failure here
 	docker-compose stop
 
-stop.watchers: ## Stop asset watchers
-	docker-compose -f docker-compose-watchers.yml stop
+dev.stop.%: ## Stop specific services.
+	docker-compose stop $$(echo $* | tr + " ")
 
-stop.all: | stop.analytics_pipeline stop stop.watchers ## Stop all containers, including asset watchers
+dev.kill: ## Kill all running services.
+	(test -d .docker-sync && docker-sync stop) || true ## Ignore failure here
+	docker-compose stop
 
-stop.xqueue: ## Stop the XQueue service container
-	docker-compose -f docker-compose-xqueue.yml stop
+dev.kill.%: ## Kill specific services.
+	docker-compose kill $$(echo $* | tr + " ")
 
-down: ## Remove all service containers and networks
+dev.rm-stopped: ## Remove stopped containers. Does not affect running containers.
+	docker-compose rm --force
+
+dev.down: ## Stop and remove containers and networks for all services.
 	(test -d .docker-sync && docker-sync clean) || true ## Ignore failure here
-	docker-compose -f docker-compose.yml -f docker-compose-watchers.yml -f docker-compose-xqueue.yml -f docker-compose-analytics-pipeline.yml down
+	docker-compose down
 
-destroy: ## Remove all devstack-related containers, networks, and volumes
-	$(WINPTY) bash ./destroy.sh
+dev.down.%: ## Stop and remove containers for specific services.
+	docker-compose rm --force --stop $$(echo $* | tr + " ")
 
-logs: ## View logs from containers running in detached mode
-	docker-compose -f docker-compose.yml -f docker-compose-analytics-pipeline.yml logs -f
 
-%-logs: ## View the logs of the specified service container
-	docker-compose -f docker-compose.yml -f docker-compose-analytics-pipeline.yml logs -f --tail=500 $*
+########################################################################################
+# Developer interface: System queries and checks.
+########################################################################################
 
-xqueue-logs: ## View logs from containers running in detached mode
-	docker-compose -f docker-compose-xqueue.yml logs -f xqueue
-
-xqueue_consumer-logs: ## View logs from containers running in detached mode
-	docker-compose -f docker-compose-xqueue.yml logs -f xqueue_consumer
-
-pull: ## Update Docker images
-	docker-compose pull
-
-pull.xqueue: ## Update XQueue Docker images
-	docker-compose -f docker-compose-xqueue.yml pull
-
-validate: ## Validate the devstack configuration
-	docker-compose config
-
-backup: ## Write all data volumes to the host.
-	docker run --rm --volumes-from edx.devstack.mysql -v $$(pwd)/.dev/backups:/backup debian:jessie tar zcvf /backup/mysql.tar.gz /var/lib/mysql
-	docker run --rm --volumes-from edx.devstack.mongo -v $$(pwd)/.dev/backups:/backup debian:jessie tar zcvf /backup/mongo.tar.gz /data/db
-	docker run --rm --volumes-from edx.devstack.elasticsearch -v $$(pwd)/.dev/backups:/backup debian:jessie tar zcvf /backup/elasticsearch.tar.gz /usr/share/elasticsearch/data
-
-restore:  ## Restore all data volumes from the host. WARNING: THIS WILL OVERWRITE ALL EXISTING DATA!
-	docker run --rm --volumes-from edx.devstack.mysql -v $$(pwd)/.dev/backups:/backup debian:jessie tar zxvf /backup/mysql.tar.gz
-	docker run --rm --volumes-from edx.devstack.mongo -v $$(pwd)/.dev/backups:/backup debian:jessie tar zxvf /backup/mongo.tar.gz
-	docker run --rm --volumes-from edx.devstack.elasticsearch -v $$(pwd)/.dev/backups:/backup debian:jessie tar zxvf /backup/elasticsearch.tar.gz
-
-# TODO: Print out help for this target. Even better if we can iterate over the
-# services in docker-compose.yml, and print the actual service names.
-%-shell: ## Run a shell on the specified service container
-	docker exec -it edx.devstack.$* /bin/bash
-
-credentials-shell: ## Run a shell on the credentials container
-	docker exec -it edx.devstack.credentials env TERM=$(TERM) bash -c 'source /edx/app/credentials/credentials_env && cd /edx/app/credentials/credentials && /bin/bash'
-
-discovery-shell: ## Run a shell on the discovery container
-	docker exec -it edx.devstack.discovery env TERM=$(TERM) /edx/app/discovery/devstack.sh open
-
-ecommerce-shell: ## Run a shell on the ecommerce container
-	docker exec -it edx.devstack.ecommerce env TERM=$(TERM) /edx/app/ecommerce/devstack.sh open
-
-e2e-shell: ## Start the end-to-end tests container with a shell
-	docker run -it --network=devstack_default -v ${DEVSTACK_WORKSPACE}/edx-e2e-tests:/edx-e2e-tests -v ${DEVSTACK_WORKSPACE}/edx-platform:/edx-e2e-tests/lib/edx-platform --env-file ${DEVSTACK_WORKSPACE}/edx-e2e-tests/devstack_env edxops/e2e env TERM=$(TERM) bash
-
-%-update-db: ## Run migrations for the specified service container
-	docker exec -t edx.devstack.$* bash -c 'source /edx/app/$*/$*_env && cd /edx/app/$*/$*/ && make migrate'
-
-studio-update-db: ## Run migrations for the Studio container
-	docker exec -t edx.devstack.studio bash -c 'source /edx/app/edxapp/edxapp_env && cd /edx/app/edxapp/edx-platform/ && paver update_db'
-
-lms-update-db: ## Run migrations LMS container
-	docker exec -t edx.devstack.lms bash -c 'source /edx/app/edxapp/edxapp_env && cd /edx/app/edxapp/edx-platform/ && paver update_db'
-
-update-db: | studio-update-db lms-update-db discovery-update-db ecommerce-update-db credentials-update-db ## Run the migrations for all services
-
-lms-shell: ## Run a shell on the LMS container
-	docker exec -it edx.devstack.lms env TERM=$(TERM) /edx/app/edxapp/devstack.sh open
-
-lms-watcher-shell: ## Run a shell on the LMS watcher container
-	docker exec -it edx.devstack.lms_watcher env TERM=$(TERM) /edx/app/edxapp/devstack.sh open
-
-%-attach: ## Attach to the specified service container process to use the debugger & see logs.
-	docker attach edx.devstack.$*
-
-lms-restart: ## Kill the LMS Django development server. The watcher process will restart it.
-	docker exec -t edx.devstack.lms bash -c 'kill $$(ps aux | grep "manage.py lms" | egrep -v "while|grep" | awk "{print \$$2}")'
-
-studio-shell: ## Run a shell on the Studio container
-	docker exec -it edx.devstack.studio env TERM=$(TERM) /edx/app/edxapp/devstack.sh open
-
-studio-watcher-shell: ## Run a shell on the studio watcher container
-	docker exec -it edx.devstack.studio_watcher env TERM=$(TERM) /edx/app/edxapp/devstack.sh open
-
-studio-restart: ## Kill the LMS Django development server. The watcher process will restart it.
-	docker exec -t edx.devstack.studio bash -c 'kill $$(ps aux | grep "manage.py cms" | egrep -v "while|grep" | awk "{print \$$2}")'
-
-xqueue-shell: ## Run a shell on the XQueue container
-	docker exec -it edx.devstack.xqueue env TERM=$(TERM) /edx/app/xqueue/devstack.sh open
-
-xqueue-restart: ## Kill the XQueue development server. The watcher process will restart it.
-	docker exec -t edx.devstack.xqueue bash -c 'kill $$(ps aux | grep "manage.py runserver" | egrep -v "while|grep" | awk "{print \$$2}")'
-
-xqueue_consumer-shell: ## Run a shell on the XQueue consumer container
-	docker exec -it edx.devstack.xqueue_consumer env TERM=$(TERM) /edx/app/xqueue/devstack.sh open
-
-xqueue_consumer-restart: ## Kill the XQueue development server. The watcher process will restart it.
-	docker exec -t edx.devstack.xqueue_consumer bash -c 'kill $$(ps aux | grep "manage.py run_consumer" | egrep -v "while|grep" | awk "{print \$$2}")'
-
-%-static: ## Rebuild static assets for the specified service container
-	docker exec -t edx.devstack.$* bash -c 'source /edx/app/$*/$*_env && cd /edx/app/$*/$*/ && make static'
-
-lms-static: ## Rebuild static assets for the LMS container
-	docker exec -t edx.devstack.lms bash -c 'source /edx/app/edxapp/edxapp_env && cd /edx/app/edxapp/edx-platform/ && paver update_assets'
-
-studio-static: ## Rebuild static assets for the Studio container
-	docker exec -t edx.devstack.studio bash -c 'source /edx/app/edxapp/edxapp_env && cd /edx/app/edxapp/edx-platform/ && paver update_assets'
-
-static: | credentials-static discovery-static ecommerce-static lms-static studio-static ## Rebuild static assets for all service containers
-
-healthchecks: ## Run a curl against all services' healthcheck endpoints to make sure they are up. This will eventually be parameterized
-	$(WINPTY) bash ./healthchecks.sh
-
-e2e-tests: ## Run the end-to-end tests against the service containers
-	docker run -t --network=devstack_default -v ${DEVSTACK_WORKSPACE}/edx-e2e-tests:/edx-e2e-tests -v ${DEVSTACK_WORKSPACE}/edx-platform:/edx-e2e-tests/lib/edx-platform --env-file ${DEVSTACK_WORKSPACE}/edx-e2e-tests/devstack_env edxops/e2e env TERM=$(TERM)  bash -c 'paver e2e_test --exclude="whitelabel\|enterprise"'
-
-validate-lms-volume: ## Validate that changes to the local workspace are reflected in the LMS container
-	touch $(DEVSTACK_WORKSPACE)/edx-platform/testfile
-	docker exec edx.devstack.lms ls /edx/app/edxapp/edx-platform/testfile
-	rm $(DEVSTACK_WORKSPACE)/edx-platform/testfile
-
-vnc-passwords: ## Get the VNC passwords for the Chrome and Firefox Selenium containers
-	@docker logs edx.devstack.chrome 2>&1 | grep "VNC password" | tail -1
-	@docker logs edx.devstack.firefox 2>&1 | grep "VNC password" | tail -1
-
-devpi-password: ## Get the root devpi password for the devpi container
-	docker-compose exec devpi bash -c "cat /data/server/.serverpassword"
-
-mysql-shell: ## Run a shell on the mysql container
-	docker-compose exec mysql bash
-
-mysql-shell-edxapp: ## Run a mysql shell on the edxapp database
-	docker-compose exec mysql bash -c "mysql edxapp"
-
-mongo-shell: ## Run a shell on the mongo container
-	docker-compose exec mongo bash
-
-### analytics pipeline commands
-
-dev.provision.analytics_pipeline: | check-memory dev.provision.analytics_pipeline.run stop.analytics_pipeline stop ## Provision analyticstack dev environment with all services stopped
-
-dev.provision.analytics_pipeline.run:
-	DOCKER_COMPOSE_FILES="-f docker-compose.yml -f docker-compose-host.yml -f docker-compose-analytics-pipeline.yml" ./provision-analytics-pipeline.sh
-
-analytics-pipeline-shell: ## Run a shell on the analytics pipeline container
-	docker exec -it edx.devstack.analytics_pipeline env TERM=$(TERM) /edx/app/analytics_pipeline/devstack.sh open
-
-dev.up.analytics_pipeline: | check-memory ## Bring up analytics pipeline services
-	bash -c 'docker-compose -f docker-compose.yml -f docker-compose-analytics-pipeline.yml -f docker-compose-host.yml up -d analyticspipeline'
-
-pull.analytics_pipeline: ## Update analytics pipeline docker images
-	docker-compose -f docker-compose.yml -f docker-compose-analytics-pipeline.yml pull
-
-analytics-pipeline-devstack-test: ## Run analytics pipeline tests in travis build
-	docker exec -u hadoop -i edx.devstack.analytics_pipeline bash -c 'sudo chown -R hadoop:hadoop /edx/app/analytics_pipeline && source /edx/app/hadoop/.bashrc && make develop-local && make docker-test-acceptance-local ONLY_TESTS=edx.analytics.tasks.tests.acceptance.test_internal_reporting_database && make docker-test-acceptance-local ONLY_TESTS=edx.analytics.tasks.tests.acceptance.test_user_activity'
-
-stop.analytics_pipeline: ## Stop analytics pipeline services
-	docker-compose -f docker-compose.yml -f docker-compose-analytics-pipeline.yml stop
-	docker-compose up -d mysql      ## restart mysql as other containers need it
-
-hadoop-application-logs-%: ## View hadoop logs by application Id
-	docker exec -it edx.devstack.analytics_pipeline.nodemanager yarn logs -applicationId $*
-
-# Provisions studio, ecommerce, and marketing with course(s) in test-course.json
-# Modify test-course.json before running this make target to generate a custom course
-create-test-course: ## NOTE: marketing course creation is not available for those outside edX
-	$(WINPTY) bash ./course-generator/create-courses.sh --studio --ecommerce --marketing course-generator/test-course.json
-
-# Run the course json builder script and use the outputted course json to provision studio, ecommerce, and marketing
-# Modify the list of courses in build-course-json.sh beforehand to generate custom courses
-build-courses: ## NOTE: marketing course creation is not available for those outside edX
-	$(WINPTY) bash ./course-generator/build-course-json.sh course-generator/tmp-config.json
-	$(WINPTY) bash ./course-generator/create-courses.sh --studio --ecommerce --marketing course-generator/tmp-config.json
-	rm course-generator/tmp-config.json
-
-check-memory: ## Check if enough memory has been allocated to Docker
+dev.check-memory: ## Check if enough memory has been allocated to Docker.
 	@if [ `docker info --format '{{.MemTotal}}'` -lt 2095771648 ]; then echo "\033[0;31mWarning, System Memory is set too low!!! Increase Docker memory to be at least 2 Gigs\033[0m"; fi || exit 0
 
-stats: ## Get per-container CPU and memory utilization data
+dev.stats: ## Get per-container CPU and memory utilization data.
 	docker stats --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}"
+
+dev.check: dev.check.$(DEFAULT_SERVICES) ## Run checks for the default service set.
+
+dev.check.%:  # Run checks for a given service or set of services.
+	$(WINPTY) bash ./check.sh $*
+
+dev.validate: ## Print effective Docker Compose config, validating files in COMPOSE_FILE.
+	docker-compose config
+
+
+########################################################################################
+# Developer interface: Runtime service management (caching, logs, shells).
+########################################################################################
+
+dev.cache-programs: ## Copy programs from Discovery to Memcached for use in LMS.
+	$(WINPTY) bash ./programs/provision.sh cache
+
+dev.restart-devserver: _expects-service.dev.restart-devserver
+
+dev.restart-devserver.forum:
+	docker-compose exec forum bash -c 'kill $$(ps aux | grep "ruby app.rb" | egrep -v "while|grep" | awk "{print \$$2}")'
+
+dev.forum.build-indices: ## Build indices for forum service
+	docker-compose exec forum bash -c "cd forum && source ruby_env && source devstack_forum_env && cd cs_comments_service/ && bin/rake search:rebuild_indices"
+
+dev.restart-devserver.%: ## Kill an edX service's development server. Watcher should restart it.
+	# Applicable to Django services only.
+	docker-compose exec $* bash -c 'kill $$(ps aux | egrep "manage.py ?\w* runserver" | egrep -v "while|grep" | awk "{print \$$2}")'
+
+dev.logs: ## View logs from running containers.
+	docker-compose logs -f
+
+dev.logs.%: ## View the logs of the specified service container.
+	docker-compose logs -f --tail=500 $*
+
+dev.attach: _expects-service.dev.attach
+
+dev.attach.%: ## Attach to the specified service container process for debugging & seeing logs.
+	docker attach "$$(make --silent --no-print-directory dev.print-container.$*)"
+
+dev.shell: _expects-service.dev.shell
+
+dev.shell.credentials:
+	docker-compose exec credentials env TERM=$(TERM) bash -c 'source /edx/app/credentials/credentials_env && cd /edx/app/credentials/credentials && /bin/bash'
+
+dev.shell.discovery:
+	docker-compose exec discovery env TERM=$(TERM) /edx/app/discovery/devstack.sh open
+
+dev.shell.ecommerce:
+	docker-compose exec ecommerce env TERM=$(TERM) /edx/app/ecommerce/devstack.sh open
+
+dev.shell.registrar:
+	docker-compose exec registrar env TERM=$(TERM) /edx/app/registrar/devstack.sh open
+
+dev.shell.xqueue:
+	docker-compose exec xqueue env TERM=$(TERM) /edx/app/xqueue/devstack.sh open
+
+dev.shell.lms:
+	docker-compose exec lms env TERM=$(TERM) /edx/app/edxapp/devstack.sh open
+
+dev.shell.lms_watcher:
+	docker-compose exec lms_watcher env TERM=$(TERM) /edx/app/edxapp/devstack.sh open
+
+dev.shell.studio:
+	docker-compose exec studio env TERM=$(TERM) /edx/app/edxapp/devstack.sh open
+
+dev.shell.studio_watcher:
+	docker-compose exec studio_watcher env TERM=$(TERM) /edx/app/edxapp/devstack.sh open
+
+dev.shell.xqueue_consumer:
+	docker-compose exec xqueue_consumer env TERM=$(TERM) /edx/app/xqueue/devstack.sh open
+
+dev.shell.%: ## Run a shell on the specified service's container.
+	docker-compose exec $* /bin/bash
+
+dev.dbshell:
+	docker-compose exec mysql57 bash -c "mysql"
+
+dev.dbshell.%: ## Run a SQL shell on the given database.
+	docker-compose exec mysql57 bash -c "mysql $*"
+
+dev.dbcopy57.%: ## Copy data from old mysql 5.6 container into a new 5.7 db
+	docker-compose exec mysql bash -c "mysqldump $*" > .dev/$*.sql
+	docker-compose exec -T mysql57 bash -c "mysql $*" < .dev/$*.sql
+	rm .dev/$*.sql
+
+# List of Makefile targets to run static asset generation, in the form dev.static.$(service)
+# Services will only have their asset generation added here
+# if the service is present in both $(DEFAULT_SERVICES) and $(ASSET_SERVICES).
+_asset_compilation_targets = \
+$(foreach asset_service,$(ASSET_SERVICES_LIST),\
+	$(if $(filter $(asset_service), $(DEFAULT_SERVICES_LIST)),\
+		dev.static.$(asset_service)))
+
+dev.static: | $(_asset_compilation_targets)
+
+dev.static.lms:
+	docker-compose exec lms bash -c 'source /edx/app/edxapp/edxapp_env && cd /edx/app/edxapp/edx-platform/ && paver update_assets lms'
+
+dev.static.studio:
+	docker-compose exec studio bash -c 'source /edx/app/edxapp/edxapp_env && cd /edx/app/edxapp/edx-platform/ && paver update_assets studio'
+
+dev.static.%: ## Rebuild static assets for the specified service's container.
+	docker-compose exec $* bash -c 'source /edx/app/$*/$*_env && cd /edx/app/$*/$*/ && make static'
+
+
+########################################################################################
+# Developer interface: Commands that do a combination of things.
+########################################################################################
+
+
+dev.reset: dev.down dev.reset-repos dev.prune dev.pull.large-and-slow dev.up.large-and-slow dev.static dev.migrate ## Attempt to reset the local devstack to the master working state without destroying data.
+
+dev.destroy.coursegraph: dev.down.coursegraph ## Remove all coursegraph data.
+	docker volume rm ${COMPOSE_PROJECT_NAME}_coursegraph_data
+
+dev.destroy: ## Irreversibly remove all devstack-related containers, networks, and volumes.
+	$(WINPTY) bash ./destroy.sh
+
+
+########################################################################################
+# Developer interface: Support for alternative file synchronization strategies.
+########################################################################################
+
+dev.nfs.setup: ## Sets up an NFS server on the /Users folder, allowing NFS mounting on docker.
+	./setup_native_nfs_docker_osx.sh
+
+dev.nfs.%: ## Run any 'dev.'-prefixed command, but using NFS configuration.
+	FS_SYNC_STRATEGY=nfs make dev.$*
+
+# TODO: Improve or rip out Docker Sync targets.
+#       They are not well-fleshed-out and it is not clear if anyone uses them.
+
+dev.sync.daemon.start: ## Start the docker-sycn daemon.
+	docker-sync start
+
+dev.sync.provision: dev.sync.daemon.start ## Provision with docker-sync enabled.
+	FS_SYNC_STRATEGY=docker-sync make dev.provision
+
+dev.sync.requirements: ## Install requirements for docker-sync usage.
+	gem install docker-sync
+
+dev.sync.up: dev.sync.daemon.start ## Bring up all services with docker-sync enabled.
+	FS_SYNC_STRATEGY=docker-sync make dev.up
+
+
+########################################################################################
+# Support for "prefix-form" commands:
+#     $service-$action instead of dev.$action.$services
+# For example, the command:
+#     make dev.attach.registrar
+# can be expressed as:
+#     make registrar-attach
+# This form may be quicker to type and more amenable to tab-completion.
+########################################################################################
+
+# Implementation notes:
+# The weird syntax here is a way to generate generic targets from existing generic targets.
+# For example:
+#     $(addsuffix -migrate, $(DB_SERVICES_LIST))
+# Takes the list of all DB-backed services and appends '-migrate', yielding a list like:
+#  	  credentials-migrate discovery-migrate ecommerce-migrate ...(and so on)
+# Then:
+#     : %-migrate: dev.migrate.%
+# Tells Make to match against the aforementioned list, and given an occurance like:
+#     SERVICE-migrate
+# define it as a target with no recipe but with a single prerequisite:
+#     dev.migrate.SERVICE
+# Effectively, 'SERVICE-migrate' is aliased to 'dev.migrate.SERVICE' for
+# all values of SERVICE in $(DB_SERVICES_LIST).
+
+$(addsuffix -pull, $(ALL_SERVICES_LIST)): %-pull: dev.pull.%
+$(addsuffix -pull-without-deps, $(ALL_SERVICES_LIST)): %-pull-without-deps: dev.pull.without-deps.%
+$(addsuffix -migrate, $(DB_SERVICES_LIST)): %-migrate: dev.migrate.%
+$(addsuffix -up, $(ALL_SERVICES_LIST)): %-up: dev.up.%
+$(addsuffix -up-attach, $(ALL_SERVICES_LIST)): %-up-attach: dev.up.attach.%
+$(addsuffix -up-shell, $(ALL_SERVICES_LIST)): %-up-shell: dev.up.shell.%
+$(addsuffix -up-with-programs, $(EDX_SERVICES_LIST)): %-up-with-programs: dev.up.with-programs.%
+$(addsuffix -up-with-watchers, $(ALL_SERVICES_LIST)): %-up-with-watchers: dev.up.with-watchers.%
+$(addsuffix -up-without-deps, $(ALL_SERVICES_LIST)): %-up-without-deps: dev.up.without-deps.%
+$(addsuffix -up-without-deps-shell, $(ALL_SERVICES_LIST)): %-up-without-deps-shell: dev.up.without-deps.shell.%
+$(addsuffix -print-container, $(ALL_SERVICES_LIST)): %-print-container: dev.print-container.%
+$(addsuffix -restart-container, $(ALL_SERVICES_LIST)): %-restart-container: dev.restart-container.%
+$(addsuffix -stop, $(ALL_SERVICES_LIST)): %-stop: dev.stop.%
+$(addsuffix -kill, $(ALL_SERVICES_LIST)): %-kill: dev.kill.%
+$(addsuffix -down, $(ALL_SERVICES_LIST)): %-down: dev.down.%
+$(addsuffix -check, $(EDX_SERVICES_LIST)): %-check: dev.check.%
+$(addsuffix -restart-devserver, $(EDX_SERVICES_LIST)): %-restart-devserver: dev.restart-devserver.%
+$(addsuffix -logs, $(ALL_SERVICES_LIST)): %-logs: dev.logs.%
+$(addsuffix -attach, $(ALL_SERVICES_LIST)): %-attach: dev.attach.%
+$(addsuffix -shell, $(ALL_SERVICES_LIST)): %-shell: dev.shell.%
+$(addsuffix -static, $(ASSET_SERVICES_LIST)): %-static: dev.static.%
+
+
+########################################################################################
+# Helper targets for other targets to use.
+########################################################################################
+
+# Many targets allow service(s) to be passed in as a suffix.
+# For example, make dev.up.lms` is a more specific form of `make dev.up`.
+# For some targets, it is invalid NOT to pass in a service as a suffix.
+# For example, `make dev.attach.lms` is valid, but `make dev.attach` is not.
+# For such targets, we still want to define the invalid stub target in this Makefile
+# for the purpose of including it in command-line completion.
+# These _expects-* targets can be used to define those stub targets such that they
+# print out something useful. See `dev.attach` for an example usage.
+
+_expects-service.%:
+	@echo "'make $*' on its own has no effect."
+	@echo "It expects a service as a suffix."
+	@echo "For example:"
+	@echo "    make $*.lms"
+
+_expects-service-list.%:
+	@echo "'make $*' on its own has no effect."
+	@echo "It expects one or more services as a suffix, separated by plus signs."
+	@echo "For example:"
+	@echo "    make $*.lms"
+	@echo "Or:"
+	@echo "    make $*.registrar+ecommerce+studio"
+
+_expects-database.%:
+	@echo "'make $*' on its own has no effect."
+	@echo "It expects a database as a suffix."
+	@echo "For example:"
+	@echo "    make $*.edxapp"
+
+
+########################################################################################
+# Convenient ways to opt in or out of devstack usage metrics reporting
+########################################################################################
+
+metrics-opt-in: ## To opt into basic data collection to help improve devstack
+	@./scripts/send_metrics.py opt-in
+
+metrics-opt-out: ## To opt out of metrics data collection
+	@./scripts/send_metrics.py opt-out
+
+
+########################################################################################
+# Miscellaneous targets.
+# These are useful, but don't fit nicely to the greater Devstack interface.
+########################################################################################
+
+docs: ## generate Sphinx HTML documentation, including API docs
+	tox -e docs
+
+e2e-tests: dev.up.lms+studio+firefox+chrome ## Run the end-to-end tests against the service containers.
+	docker run -t --network=$(COMPOSE_PROJECT_NAME)_default -v $(DEVSTACK_WORKSPACE)/edx-e2e-tests:/edx-e2e-tests --env-file $(DEVSTACK_WORKSPACE)/edx-e2e-tests/devstack_env edxops/e2e env TERM=$(TERM) bash -c 'paver e2e_test'
+
+e2e-tests.with-shell: dev.up.lms+studio+firefox+chrome ## Start the end-to-end tests container with a shell.
+	docker run -it --network=$(COMPOSE_PROJECT_NAME)_default -v $(DEVSTACK_WORKSPACE)/edx-e2e-tests:/edx-e2e-tests --env-file $(DEVSTACK_WORKSPACE)/edx-e2e-tests/devstack_env edxops/e2e env TERM=$(TERM) bash
+
+validate-lms-volume: ## Validate that changes to the local workspace are reflected in the LMS container.
+	touch $(DEVSTACK_WORKSPACE)/edx-platform/testfile
+	docker-compose exec -T lms ls /edx/app/edxapp/edx-platform/testfile
+	rm $(DEVSTACK_WORKSPACE)/edx-platform/testfile
+
+vnc-passwords: ## Get the VNC passwords for the Chrome and Firefox Selenium containers.
+	@docker-compose logs chrome 2>&1 | grep "VNC password" | tail -1
+	@docker-compose logs firefox 2>&1 | grep "VNC password" | tail -1
+
+devpi-password: ## Get the root devpi password for the devpi container.
+	docker-compose exec devpi bash -c "cat /data/server/.serverpassword"
+
+hadoop-application-logs-%: ## View hadoop logs by application Id.
+	docker-compose exec nodemanager yarn logs -applicationId $*
+
+create-test-course: ## Provisions studio, and ecommerce with course(s) in test-course.json.
+	$(WINPTY) bash ./course-generator/create-courses.sh --studio --ecommerce course-generator/test-course.json
+
+build-courses: ## Build course and provision studio, and ecommerce with it.
+	# Modify test-course.json before running this make target to generate a custom course
+	$(WINPTY) bash ./course-generator/build-course-json.sh course-generator/tmp-config.json
+	$(WINPTY) bash ./course-generator/create-courses.sh --studio --ecommerce course-generator/tmp-config.json
+	rm course-generator/tmp-config.json
+
